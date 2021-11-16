@@ -4,6 +4,10 @@ const cors = require('cors');
 const admin = require("firebase-admin");
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
+const ObjectId = require('mongodb').ObjectId;
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
+const fileUpload = require('express-fileupload');
+
 const port = process.env.PORT || 5500;
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -15,6 +19,7 @@ admin.initializeApp({
 //middleware
 app.use(cors());
 app.use(express.json());
+app.use(fileUpload());
 
 //mongodb
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.8cjcg.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
@@ -41,6 +46,7 @@ async function run() {
         const database = client.db('doctors_portal');
         const appointmentCollection = database.collection('appointments');
         const usersCollection = database.collection('users');
+        const doctorsCollection = database.collection('doctors');
 
         //GET api
         app.get('/appointments', verifyToken, async (req, res) => {
@@ -62,6 +68,21 @@ async function run() {
                 isAdmin = true;
             }
             res.json({ admin: isAdmin });
+        });
+
+        //GET api for getting specific appointments
+        app.get('/appointments/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: ObjectId(id) };
+            const result = await appointmentCollection.findOne(query);
+            res.json(result);
+        });
+
+        //GET api to get all doctors
+        app.get('/doctors', async (req, res) => {
+            const cursor = doctorsCollection.find({});
+            const doctors = await cursor.toArray();
+            res.json(doctors);
         })
 
         // POST api for appointments
@@ -69,12 +90,43 @@ async function run() {
             const appointment = req.body;
             const result = await appointmentCollection.insertOne(appointment);
             res.json(result);
-        })
+        });
 
         // POST api for new regiterd user
         app.post('/users', async (req, res) => {
             const user = req.body;
             const result = await usersCollection.insertOne(user);
+            res.json(result);
+        });
+
+        //POST api for post docotrs info
+        app.post('/doctors', async (req, res) => {
+            const name = req.body.name;
+            const email = req.body.email;
+            const img = req.files.image;
+            const imgData = img.data;
+            const encodedImg = imgData.toString('base64');
+            const imgBuffer = Buffer.from(encodedImg, 'base64')
+            const doctor = {
+                name,
+                email,
+                image: imgBuffer
+            }
+            const result = await doctorsCollection.insertOne(doctor);
+            res.json(result);
+        })
+
+        //PUT api for update payment details
+        app.put('/appointments/:id', async (req, res) => {
+            const id = req.params.id;
+            const payment = req.body;
+            const filter = { _id: ObjectId(id) };
+            const updateDoc = {
+                $set: {
+                    payment: payment
+                }
+            }
+            const result = await appointmentCollection.updateOne(filter, updateDoc);
             res.json(result);
         })
 
@@ -86,7 +138,7 @@ async function run() {
             const updateDoc = { $set: user };
             const result = await usersCollection.updateOne(filter, updateDoc, options);
             res.json(result);
-        })
+        });
 
         //PUT api to make someone admin with email
         app.put('/users/admin', verifyToken, async (req, res) => {
@@ -104,6 +156,18 @@ async function run() {
             else {
                 res.status(403).json({ message: 'You have no access to make someone Admin!' });
             }
+        });
+
+        //api for payment
+        app.post('/create-payment-intent', async (req, res) => {
+            const paymentInfo = req.body;
+            const amount = paymentInfo.price * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                currency: 'usd',
+                amount: amount,
+                payment_method_types: ['card']
+            });
+            res.json({ clientSecret: paymentIntent.client_secret })
         })
     }
     finally {
